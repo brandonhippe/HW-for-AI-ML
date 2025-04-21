@@ -1,4 +1,4 @@
-# HW-for-AI-ML
+# Graph Coloring Accelerator
 
 This repository for Brandon Hippe's work for ECE 510 (Hardware for AI and ML)
 
