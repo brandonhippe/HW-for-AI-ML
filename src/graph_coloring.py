@@ -373,4 +373,4 @@ if __name__ == "__main__":
             print(f"Invalid solution for grid {ix}!")
         print(solution)
 
-    print(f"Average solve time: {tot_time / len(sudokus):.3f}s")
+    print(f"Average solve time (including training): {tot_time / len(sudokus):.3f}s")
