@@ -1,14 +1,14 @@
-import random
-from typing import Optional, List
 from time import perf_counter
+from typing import List, Optional
 
+from matplotlib.pyplot import xcorr
 import numpy as np
-from numpy.typing import NDArray
 import torch
 import torch.nn as nn
 import torch.optim as optim
+from numpy.typing import NDArray
 from torch_geometric.data import Data
-from torch_geometric.nn import GCNConv
+from torch_geometric.nn import SAGEConv
 
 
 def verify_coloring(adj_mat: NDArray[np.bool_], coloring: NDArray[np.int_]) -> bool:
@@ -111,82 +111,55 @@ def parse_sudokus(sudoku_str: str) -> List[NDArray[np.int_]]:
     return grids
 
 
-class GraphColoringNet(nn.Module):
+class GraphSAGESudokuSolver(nn.Module):
     def __init__(self, input_dim, hidden_dim, output_dim):
-        super(GraphColoringNet, self).__init__()
-        self.conv1 = GCNConv(input_dim, hidden_dim)
-        self.conv2 = GCNConv(hidden_dim, hidden_dim)
-        self.fc = nn.Linear(hidden_dim, output_dim)
+        """
+        GraphSAGE-based model for solving Sudoku puzzles.
+
+        Parameters
+        ----------
+        input_dim : int
+            Dimension of input node features.
+        hidden_dim : int
+            Dimension of hidden layers.
+        output_dim : int
+            Number of output classes (e.g., 9 for Sudoku).
+        """
+        super(GraphSAGESudokuSolver, self).__init__()
+        self.conv1 = SAGEConv(input_dim, hidden_dim)
+        self.conv2 = SAGEConv(hidden_dim, hidden_dim)
+        self.conv3 = SAGEConv(hidden_dim, 2*hidden_dim)
+        self.fc = nn.Linear(2*hidden_dim, output_dim)
 
     def forward(self, x, edge_index):
+        """
+        Forward pass of the GraphSAGE model.
+
+        Parameters
+        ----------
+        x : torch.Tensor
+            Node features.
+        edge_index : torch.Tensor
+            Edge index in COO format.
+
+        Returns
+        -------
+        torch.Tensor
+            Output logits for each node.
+        """
         x = self.conv1(x, edge_index)
         x = torch.relu(x)
         x = self.conv2(x, edge_index)
+        x = torch.relu(x)
+        x = self.conv3(x, edge_index)
         x = torch.relu(x)
         x = self.fc(x)
         return x
 
 
-def train_graph_coloring(adj_mat: NDArray[np.bool_], num_colors: int, epochs: int=1_000):
+def train_graphsage_sudoku_solver(sudoku_adj: NDArray[np.bool_], sudokus: List[NDArray[np.int_]], num_colors: int, epochs: int = 100):
     """
-    Train a GNN to produce graph colorings.
-
-    Parameters
-    ----------
-    adj_mat : NDArray[np.bool_]
-        Adjacency matrix of the graph.
-    num_colors : int
-        Number of available colors.
-    epochs : int
-        Number of training epochs.
-
-    Returns
-    -------
-    torch.Tensor
-        Predicted coloring of the graph.
-    """
-    # Convert adjacency matrix to edge index format
-    edge_index = torch.tensor(np.array(np.nonzero(adj_mat)), dtype=torch.long)
-
-    # Create node features (one-hot encoding for simplicity)
-    num_nodes = adj_mat.shape[0]
-    x = torch.eye(num_nodes, dtype=torch.float)
-
-    # Create labels (random initial coloring)
-    y = torch.randint(0, num_colors, (num_nodes,), dtype=torch.long)
-
-    # Create PyTorch Geometric data object
-    data = Data(x=x, edge_index=edge_index)
-
-    # Initialize the model, loss function, and optimizer
-    model = GraphColoringNet(input_dim=num_nodes, hidden_dim=16, output_dim=num_colors)
-    criterion = nn.CrossEntropyLoss()
-    optimizer = optim.Adam(model.parameters(), lr=0.01)
-
-    # Training loop
-    model.train()
-    for epoch in range(epochs):
-        optimizer.zero_grad()
-        out = model(data.x, data.edge_index)
-        loss = criterion(out, y)
-        loss.backward()
-        optimizer.step()
-
-        if epoch % (epochs // 10) == 0:
-            print(f"Epoch {epoch}, Loss: {loss.item()}")
-
-    # Predict coloring
-    model.eval()
-    with torch.no_grad():
-        out = model(data.x, data.edge_index)
-        predicted_coloring = torch.argmax(out, dim=1)
-
-    return predicted_coloring
-
-
-def train_sudoku_solver(sudoku_adj: NDArray[np.bool_], sudokus: List[NDArray[np.int_]], num_colors: int, epochs: int=100):
-    """
-    Train a GNN to solve Sudoku puzzles.
+    Train a GraphSAGE-based GNN to solve Sudoku puzzles iteratively by predicting one cell at a time.
 
     Parameters
     ----------
@@ -201,8 +174,8 @@ def train_sudoku_solver(sudoku_adj: NDArray[np.bool_], sudokus: List[NDArray[np.
 
     Returns
     -------
-    GraphColoringNet
-        Trained GNN model.
+    GraphSAGESudokuSolver
+        Trained GraphSAGE model.
     """
     # Convert adjacency matrix to edge index format
     edge_index = torch.tensor(np.array(np.nonzero(sudoku_adj)), dtype=torch.long)
@@ -222,40 +195,65 @@ def train_sudoku_solver(sudoku_adj: NDArray[np.bool_], sudokus: List[NDArray[np.
     data = Data(x=x, edge_index=edge_index)
 
     # Initialize the model, loss function, and optimizer
-    model = GraphColoringNet(input_dim=num_nodes, hidden_dim=64, output_dim=num_colors)
+    model = GraphSAGESudokuSolver(input_dim=num_nodes, hidden_dim=64, output_dim=num_colors)
     criterion = nn.CrossEntropyLoss(reduction='none')  # Use reduction='none' to compute loss per element
     optimizer = optim.Adam(model.parameters(), lr=0.01)
 
     # Training loop
     model.train()
     for epoch in range(epochs):
-        optimizer.zero_grad()
-        out = model(data.x, data.edge_index)  # Shape: (num_nodes, num_colors)
+        total_loss = 0
+        for sudoku_idx, sudoku in enumerate(sudokus):
+            optimizer.zero_grad()
 
-        # Repeat output for all puzzles and compute loss
-        out_repeated = out.repeat(len(y_list), 1)  # Shape: (num_puzzles * num_nodes, num_colors)
-        y_flat = y.view(-1)  # Flatten target labels
-        mask = y_flat != -1  # Mask to exclude unfilled cells (-1 values)
-        loss = criterion(out_repeated[mask], y_flat[mask])  # Compute loss only for valid elements
-        loss = loss.mean()  # Compute mean loss
+            # Flatten the Sudoku grid and initialize node features
+            solution = sudoku.flatten()
+            x = torch.eye(num_nodes, dtype=torch.float)
 
-        loss.backward()
-        optimizer.step()
+            # Iteratively predict one cell at a time
+            while np.any(solution == 0):  # While there are unfilled cells
+                out = model(x, edge_index)  # Predict logits for all nodes
+                probabilities = torch.softmax(out, dim=1)  # Convert logits to probabilities
 
-        if epoch % (epochs // 10) == 0:
-            print(f"Epoch {epoch}, Loss: {loss.item()}")
+                # Find the most confident unfilled cell
+                unfilled_indices = np.where(solution == 0)[0]
+                unfilled_probs = probabilities[unfilled_indices]
+                max_confidence, max_index = torch.max(unfilled_probs.max(dim=1).values, dim=0)
+                selected_cell = unfilled_indices[max_index.item()]
+
+                # Compute loss for the selected cell
+                target = y[sudoku_idx, selected_cell]
+                if target == -1:  # Skip if the cell is unfilled in the target
+                    continue
+                loss = criterion(out[selected_cell].unsqueeze(0), target.unsqueeze(0))
+                total_loss += loss.item()
+
+                # Backpropagate and update weights
+                loss.backward()
+                optimizer.step()
+
+                # Assign the most likely value to the selected cell
+                predicted_value = torch.argmax(probabilities[selected_cell]).item() + 1  # Convert 0-8 back to 1-9
+                solution[selected_cell] = predicted_value
+
+                # Update the node features to reflect the new prediction
+                x[selected_cell] = 0  # Reset the one-hot encoding
+                x[selected_cell, predicted_value - 1] = 1  # Update with the predicted value
+
+        if epoch % 10 == 0:
+            print(f"Epoch {epoch}, Total Loss: {total_loss}")
 
     return model
 
 
-def solve_sudoku_with_gnn(model: GraphColoringNet, sudoku_adj: NDArray[np.bool_], sudoku: NDArray[np.int_]) -> NDArray[np.int_]:
+def solve_sudoku_with_graphsage(model: GraphSAGESudokuSolver, sudoku_adj: NDArray[np.bool_], sudoku: NDArray[np.int_]) -> NDArray[np.int_]:
     """
-    Use a trained GNN to solve a Sudoku puzzle.
+    Use a trained GraphSAGE model to iteratively solve a Sudoku puzzle by predicting one cell at a time.
 
     Parameters
     ----------
-    model : GraphColoringNet
-        Trained GNN model.
+    model : GraphSAGESudokuSolver
+        Trained GraphSAGE model.
     sudoku_adj : NDArray[np.bool_]
         Adjacency matrix for the Sudoku graph.
     sudoku : NDArray[np.int_]
@@ -273,19 +271,70 @@ def solve_sudoku_with_gnn(model: GraphColoringNet, sudoku_adj: NDArray[np.bool_]
     num_nodes = sudoku_adj.shape[0]
     x = torch.eye(num_nodes, dtype=torch.float)
 
-    # Predict coloring
-    model.eval()
-    with torch.no_grad():
-        out = model(x, edge_index)
-        predicted_coloring = torch.argmax(out, dim=1) + 1  # Convert 0-8 back to 1-9
-
-    # Fill only unfilled cells (0s in the input)
+    # Flatten the Sudoku grid for easier manipulation
     solution = sudoku.flatten()
-    solution[solution == 0] = predicted_coloring[sudoku.flatten() == 0]
+
+    model.eval()
+    while np.any(solution == 0):  # While there are unfilled cells
+        with torch.no_grad():
+            out = model(x, edge_index)  # Predict logits for all nodes
+            probabilities = torch.softmax(out, dim=1)  # Convert logits to probabilities
+
+        # Find the most confident unfilled cell
+        unfilled_indices = np.where(solution == 0)[0]
+        unfilled_probs = probabilities[unfilled_indices]
+        max_confidence, max_index = torch.max(unfilled_probs.max(dim=1).values, dim=0)
+        selected_cell = unfilled_indices[max_index.item()]
+
+        # Assign the most likely value to the selected cell
+        predicted_value = torch.argmax(probabilities[selected_cell]).item() + 1  # Convert 0-8 back to 1-9
+        solution[selected_cell] = predicted_value
+
+        # Update the node features to reflect the new prediction
+        x[selected_cell] = 0  # Reset the one-hot encoding
+        x[selected_cell, predicted_value - 1] = 1  # Update with the predicted value
 
     return solution.reshape((9, 9))
 
 
+if __name__ == "__main__":
+    # Example usage
+    with open("coloring_tests/sudokus.txt", "r") as f:
+        sudokus = parse_sudokus(f.read())
+
+    print("Sudoku puzzles parsed successfully.")
+
+    # Create Sudoku adjacency matrix
+    sudoku_adj = np.array([[False] * 81 for _ in range(81)], dtype=np.bool_)
+
+    def ix_to_rc(ix):
+        r = ix // 9
+        c = ix % 9
+        return r, c
+
+    def rc_to_ix(r, c):
+        return r * 9 + c
+
+    def rc_to_box(r, c):
+        box = (c // 3) + (3 * (r // 3))
+        return box
+
+    def box_to_rc(box, ix):
+        r = 3 * (box // 3) + (ix // 3)
+        c = 3 * (box % 3) + (ix % 3)
+        return r, c
+
+    for ix in range(len(sudoku_adj)):
+        r, c = ix_to_rc(ix)
+        box = rc_to_box(r, c)
+        for cell_ix in range(9):
+            sudoku_adj[ix, rc_to_ix(r, cell_ix)] = True
+            sudoku_adj[ix, rc_to_ix(cell_ix, c)] = True
+            sudoku_adj[ix, rc_to_ix(*box_to_rc(box, cell_ix))] = True
+
+    print("Created Sudoku Adjacency Matrix")
+
+    
 if __name__ == "__main__":
     adj_mat = np.array([
         [False, True, True, False],
@@ -299,10 +348,6 @@ if __name__ == "__main__":
     print("Generated Coloring:", coloring)
     assert verify_coloring(adj_mat, coloring), "The generated coloring is not valid."
     print("The generated coloring is valid.")
-
-    predicted_coloring = train_graph_coloring(adj_mat, num_colors)
-    print("Predicted Coloring:", predicted_coloring.numpy())
-    print(f"The predicted coloring is {'in' if verify_coloring(adj_mat, predicted_coloring.numpy()) else ''}valid.")
 
     with open("coloring_tests/sudokus.txt", "r") as f:
         sudokus = parse_sudokus(f.read())
@@ -353,18 +398,21 @@ if __name__ == "__main__":
 
     # print(f"Average solve time: {tot_time / len(sudokus):.3f}s")
 
-    # Train the GNN
+    # Train the GraphSAGE model
     num_colors = 9
     tot_time = 0
     valid = 0
     start_t = perf_counter()
-    model = train_sudoku_solver(sudoku_adj, sudokus, num_colors, epochs=100_000)
+    
+    # Train the model
+    print("Training GraphSAGE model...")
+    model = train_graphsage_sudoku_solver(sudoku_adj, sudokus, num_colors, epochs=100)
     tot_time += perf_counter() - start_t
 
     # Solve Sudoku puzzles
     for ix, sudoku in enumerate(sudokus, 1):
         start_t = perf_counter()
-        solution = solve_sudoku_with_gnn(model, sudoku_adj, sudoku)
+        solution = solve_sudoku_with_graphsage(model, sudoku_adj, sudoku)
         tot_time += perf_counter() - start_t
         if verify_coloring(sudoku_adj, solution[:].reshape(81,)):
             print(f"Grid {ix} solution:")
