@@ -1,7 +1,10 @@
+import csv
+import random
+import re
+from pathlib import Path
 from time import perf_counter
 from typing import List, Optional
 
-from matplotlib.pyplot import xcorr
 import numpy as np
 import torch
 import torch.nn as nn
@@ -61,7 +64,7 @@ def generate_coloring(adj_mat: NDArray[np.bool_], num_colors: int, initial_color
     assert coloring.shape == (n,), "Initial coloring must have the same length as the number of nodes."
 
     try:
-        node = filter(lambda e: e[1] == 0, enumerate(coloring)).__next__()[0]
+        node = next(filter(lambda e: e[1] == 0, enumerate(coloring)))[0]
     except StopIteration:
         return coloring
     
@@ -96,19 +99,6 @@ def parse_sudokus(sudoku_str: str) -> List[NDArray[np.int_]]:
     list[NDArray[np.int_]]
         List of numpy arrays representing the Sudoku puzzles.
     """
-    import re
-    grid_split = re.split(r"Grid \d+\n", sudoku_str.strip())
-    grids = []
-    for grid_str in grid_split:
-        grid_str = grid_str.strip()
-        if not grid_str:
-            continue
-        
-        grid = np.array([np.array(list(map(int, iter(line.strip())))) for line in grid_str.splitlines()], dtype=np.int_)
-        assert grid.shape == (9, 9), "Each Sudoku puzzle must be a 9x9 grid."
-        grids.append(grid)
-
-    return grids
 
 
 class GraphSAGESudokuSolver(nn.Module):
@@ -297,45 +287,25 @@ def solve_sudoku_with_graphsage(model: GraphSAGESudokuSolver, sudoku_adj: NDArra
     return solution.reshape((9, 9))
 
 
-if __name__ == "__main__":
-    # Example usage
-    with open("coloring_tests/sudokus.txt", "r") as f:
-        sudokus = parse_sudokus(f.read())
+def ix_to_rc(ix):
+    r = ix // 9
+    c = ix % 9
+    return r, c
 
-    print("Sudoku puzzles parsed successfully.")
+def rc_to_ix(r, c):
+    return r * 9 + c
 
-    # Create Sudoku adjacency matrix
-    sudoku_adj = np.array([[False] * 81 for _ in range(81)], dtype=np.bool_)
+def rc_to_box(r, c):
+    box = (c // 3) + (3 * (r // 3))
+    return box
 
-    def ix_to_rc(ix):
-        r = ix // 9
-        c = ix % 9
-        return r, c
+def box_to_rc(box, ix):
+    r = 3 * (box // 3) + (ix // 3)
+    c = 3 * (box % 3) + (ix % 3)
+    return r, c
 
-    def rc_to_ix(r, c):
-        return r * 9 + c
 
-    def rc_to_box(r, c):
-        box = (c // 3) + (3 * (r // 3))
-        return box
-
-    def box_to_rc(box, ix):
-        r = 3 * (box // 3) + (ix // 3)
-        c = 3 * (box % 3) + (ix % 3)
-        return r, c
-
-    for ix in range(len(sudoku_adj)):
-        r, c = ix_to_rc(ix)
-        box = rc_to_box(r, c)
-        for cell_ix in range(9):
-            sudoku_adj[ix, rc_to_ix(r, cell_ix)] = True
-            sudoku_adj[ix, rc_to_ix(cell_ix, c)] = True
-            sudoku_adj[ix, rc_to_ix(*box_to_rc(box, cell_ix))] = True
-
-    print("Created Sudoku Adjacency Matrix")
-
-    
-if __name__ == "__main__":
+def main():
     adj_mat = np.array([
         [False, True, True, False],
         [True, False, True, True],
@@ -349,29 +319,32 @@ if __name__ == "__main__":
     assert verify_coloring(adj_mat, coloring), "The generated coloring is not valid."
     print("The generated coloring is valid.")
 
-    with open("coloring_tests/sudokus.txt", "r") as f:
-        sudokus = parse_sudokus(f.read())
+    sudoku_filename = "sudoku.txt"
+    # sudoku_filename = "sudoku.csv"
+    sudoku_path = Path(__file__).parent / "coloring_tests" / sudoku_filename
 
+    with open(sudoku_path, encoding="UTF-8") as f:
+        if sudoku_path.suffix == ".csv":
+            sudoku_csv = csv.DictReader(f)
+            sudoku_strings = [row["quizzes"] for row in sudoku_csv]
+            # convert_sudoku = lambda sudoku: np.array(list(map(int, sudoku)), dtype=np.int_).reshape((9, 9))
+            # sudokus = [convert_sudoku(sudoku_strings[0])]
+            sudokus = [np.array(list(map(int, sudoku)), dtype=np.int_).reshape((9, 9)) for sudoku in sudoku_strings]
+        else:
+            grid_split = re.split(r"Grid \d+\n", f.read().strip())
+            sudokus = []
+            for grid_str in grid_split:
+                grid_str = grid_str.strip()
+                if not grid_str:
+                    continue
+                
+                grid = np.array([np.array(list(map(int, iter(line.strip())))) for line in grid_str.splitlines()], dtype=np.int_)
+                sudokus.append(grid)
+
+    assert all(grid.shape == (9, 9) for grid in sudokus), "Each Sudoku puzzle must be a 9x9 grid."
     print("Sudoku puzzles parsed successfully.")
 
     sudoku_adj = np.array([[False] * 81 for _ in range(81)], dtype=np.bool_)
-
-    def ix_to_rc(ix):
-        r = ix // 9
-        c = ix % 9
-        return r, c
-    
-    def rc_to_ix(r, c):
-        return r * 9 + c
-
-    def rc_to_box(r, c):
-        box = (c // 3) + (3 * (r // 3))
-        return box
-
-    def box_to_rc(box, ix):
-        r = 3 * (box // 3) + (ix // 3)
-        c = 3 * (box % 3) + (ix % 3)
-        return r, c
 
     for ix in range(len(sudoku_adj)):
         r, c = ix_to_rc(ix)
@@ -382,43 +355,47 @@ if __name__ == "__main__":
             sudoku_adj[ix, rc_to_ix(*box_to_rc(box, cell_ix))] = True
 
     print("Created Sudoku Adjacency Matrix")
-    # r = random.randint(0, 8)
-    # c = random.randint(0, 8)
-    # print(f"Adjacency list for Row {r + 1} Col {c + 1}")
-    # print(sudoku_adj[rc_to_ix(r, c)][:].reshape((9, 9)))
+    r = random.randint(0, 8)
+    c = random.randint(0, 8)
+    print(f"Adjacency list for Row {r + 1} Col {c + 1}")
+    print(sudoku_adj[rc_to_ix(r, c)][:].reshape((9, 9)))
 
-    # tot_time = 0
-
-    # for ix, sudoku in enumerate(sudokus, 1):
-    #     start_t = perf_counter()
-    #     solution = generate_coloring(sudoku_adj, 9, initial_coloring=sudoku.reshape(81,))
-    #     tot_time += perf_counter() - start_t
-    #     print(f"Grid {ix} solution:")
-    #     print(solution.reshape((9, 9)))
-
-    # print(f"Average solve time: {tot_time / len(sudokus):.3f}s")
-
-    # Train the GraphSAGE model
-    num_colors = 9
     tot_time = 0
-    valid = 0
-    start_t = perf_counter()
-    
-    # Train the model
-    print("Training GraphSAGE model...")
-    model = train_graphsage_sudoku_solver(sudoku_adj, sudokus, num_colors, epochs=100)
-    tot_time += perf_counter() - start_t
 
-    # Solve Sudoku puzzles
     for ix, sudoku in enumerate(sudokus, 1):
         start_t = perf_counter()
-        solution = solve_sudoku_with_graphsage(model, sudoku_adj, sudoku)
+        solution = generate_coloring(sudoku_adj, 9, initial_coloring=sudoku.reshape(81,))
         tot_time += perf_counter() - start_t
-        if verify_coloring(sudoku_adj, solution[:].reshape(81,)):
-            print(f"Grid {ix} solution:")
-            valid += 1
-        else:
-            print(f"Invalid solution for grid {ix}!")
-        print(solution)
+        print(f"Grid {ix} solution:")
+        print(solution.reshape((9, 9)))
 
-    print(f"Average solve time (including training): {tot_time / len(sudokus):.3f}s")
+    print(f"Average solve time: {tot_time / len(sudokus):.3f}s")
+
+    # Train the GraphSAGE model
+    # num_colors = 9
+    # tot_time = 0
+    # valid = 0
+    # start_t = perf_counter()
+    
+    # # Train the model
+    # print("Training GraphSAGE model...")
+    # model = train_graphsage_sudoku_solver(sudoku_adj, sudokus, num_colors, epochs=100)
+    # tot_time += perf_counter() - start_t
+
+    # # Solve Sudoku puzzles
+    # for ix, sudoku in enumerate(sudokus, 1):
+    #     start_t = perf_counter()
+    #     solution = solve_sudoku_with_graphsage(model, sudoku_adj, sudoku)
+    #     tot_time += perf_counter() - start_t
+    #     if verify_coloring(sudoku_adj, solution[:].reshape(81,)):
+    #         print(f"Grid {ix} solution:")
+    #         valid += 1
+    #     else:
+    #         print(f"Invalid solution for grid {ix}!")
+    #     print(solution)
+
+    # print(f"Average solve time (including training): {tot_time / len(sudokus):.3f}s")
+
+    
+if __name__ == "__main__":
+    main()
