@@ -371,30 +371,42 @@ def main():
 
     print(f"Average solve time: {tot_time / len(sudokus):.3f}s")
 
+    tot_time = 0
+
+    # Train the GNN
+    num_colors = 9
+    tot_time = 0
+    valid = 0
+    start_t = perf_counter()
+    model = train_sudoku_solver(sudoku_adj, sudokus, num_colors, epochs=100_000)
+    tot_time += perf_counter() - start_t
+
+    # Solve Sudoku puzzles
+    for ix, sudoku in enumerate(sudokus, 1):
+        start_t = perf_counter()
+        solution = solve_sudoku_with_gnn(model, sudoku_adj, sudoku)
+        tot_time += perf_counter() - start_t
+        if verify_coloring(sudoku_adj, solution[:].reshape(81,)):
+            print(f"Grid {ix} solution:")
+            valid += 1
+        else:
+            print(f"Invalid solution for grid {ix}!")
+        print(solution)
+
+    print(f"Average solve time: {tot_time / len(sudokus):.3f}s")
+
     # Train the GraphSAGE model
-    # num_colors = 9
-    # tot_time = 0
-    # valid = 0
-    # start_t = perf_counter()
-    
-    # # Train the model
-    # print("Training GraphSAGE model...")
-    # model = train_graphsage_sudoku_solver(sudoku_adj, sudokus, num_colors, epochs=100)
-    # tot_time += perf_counter() - start_t
+    num_colors = 9
+    tot_time = 0
 
-    # # Solve Sudoku puzzles
-    # for ix, sudoku in enumerate(sudokus, 1):
-    #     start_t = perf_counter()
-    #     solution = solve_sudoku_with_graphsage(model, sudoku_adj, sudoku)
-    #     tot_time += perf_counter() - start_t
-    #     if verify_coloring(sudoku_adj, solution[:].reshape(81,)):
-    #         print(f"Grid {ix} solution:")
-    #         valid += 1
-    #     else:
-    #         print(f"Invalid solution for grid {ix}!")
-    #     print(solution)
+    for ix, sudoku in enumerate(sudokus, 1):
+        start_t = perf_counter()
+        solution = generate_coloring(sudoku_adj, 9, initial_coloring=sudoku.reshape(81,))
+        tot_time += perf_counter() - start_t
+        print(f"Grid {ix} solution:")
+        print(solution.reshape((9, 9)))
 
-    # print(f"Average solve time (including training): {tot_time / len(sudokus):.3f}s")
+    print(f"Average solve time (including training): {tot_time / len(sudokus):.3f}s")
 
     
 if __name__ == "__main__":
