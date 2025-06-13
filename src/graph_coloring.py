@@ -99,19 +99,6 @@ def parse_sudokus(sudoku_str: str) -> List[NDArray[np.int_]]:
     list[NDArray[np.int_]]
         List of numpy arrays representing the Sudoku puzzles.
     """
-    import re
-    grid_split = re.split(r"Grid \d+\n", sudoku_str.strip())
-    grids = []
-    for grid_str in grid_split:
-        grid_str = grid_str.strip()
-        if not grid_str:
-            continue
-        
-        grid = np.array([np.array(list(map(int, iter(line.strip())))) for line in grid_str.splitlines()], dtype=np.int_)
-        assert grid.shape == (9, 9), "Each Sudoku puzzle must be a 9x9 grid."
-        grids.append(grid)
-
-    return grids
 
 
 class GraphColoringNet(nn.Module):
@@ -435,7 +422,6 @@ def box_to_rc(box, ix):
     c = 3 * (box % 3) + (ix % 3)
     return r, c
 
-
 def main():
     adj_mat = np.array([
         [False, True, True, False],
@@ -526,21 +512,20 @@ def main():
 
     print(f"Average solve time: {tot_time / len(sudokus):.3f}s")
 
-    # Train the GraphSAGE model
+    tot_time = 0
+
+    # Train the GNN
     num_colors = 9
     tot_time = 0
     valid = 0
     start_t = perf_counter()
-    
-    # Train the model
-    print("Training GraphSAGE model...")
-    model = train_graphsage_sudoku_solver(sudoku_adj, sudokus, num_colors, epochs=100)
+    model = train_sudoku_solver(sudoku_adj, sudokus, num_colors, epochs=100_000)
     tot_time += perf_counter() - start_t
 
     # Solve Sudoku puzzles
     for ix, sudoku in enumerate(sudokus, 1):
         start_t = perf_counter()
-        solution = solve_sudoku_with_graphsage(model, sudoku_adj, sudoku)
+        solution = solve_sudoku_with_gnn(model, sudoku_adj, sudoku)
         tot_time += perf_counter() - start_t
         if verify_coloring(sudoku_adj, solution[:].reshape(81,)):
             print(f"Grid {ix} solution:")
@@ -548,6 +533,19 @@ def main():
         else:
             print(f"Invalid solution for grid {ix}!")
         print(solution)
+
+    print(f"Average solve time: {tot_time / len(sudokus):.3f}s")
+
+    # Train the GraphSAGE model
+    num_colors = 9
+    tot_time = 0
+
+    for ix, sudoku in enumerate(sudokus, 1):
+        start_t = perf_counter()
+        solution = generate_coloring(sudoku_adj, 9, initial_coloring=sudoku.reshape(81,))
+        tot_time += perf_counter() - start_t
+        print(f"Grid {ix} solution:")
+        print(solution.reshape((9, 9)))
 
     print(f"Average solve time (including training): {tot_time / len(sudokus):.3f}s")
 
